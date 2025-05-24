@@ -9,6 +9,7 @@ using System.Collections.Generic;
 using System.Drawing.Drawing2D;
 using System.Globalization;
 using System.Linq;
+using System.IO;
 
 namespace ArtilleryMaster_BuildFinal
 {
@@ -56,6 +57,7 @@ namespace ArtilleryMaster_BuildFinal
 
         // Dictionary for map image paths. Because remembering stuff is hard.
         private Dictionary<string, string> mapImagePaths = new Dictionary<string, string>();
+        private Dictionary<string, double> mapGridSizes = new Dictionary<string, double>(); // <-- Add this line
 
         // Fields for map interaction
         private PointF? weaponMapPos = null; // Blue dot (left click)
@@ -73,6 +75,9 @@ namespace ArtilleryMaster_BuildFinal
 
         // List of TRPs. Not to be confused with RPGs.
         private List<TargetRegistrationPoint> trpList = new List<TargetRegistrationPoint>();
+        
+        // this directs to the save file, where everything is saved.
+        private const string SaveFilePath = "artillerymaster_save.txt";
 
         public Form1()
         {
@@ -122,6 +127,12 @@ namespace ArtilleryMaster_BuildFinal
             // Style ComboBoxes
             StyleComboBox(this.comboProjectile);
             StyleComboBox(this.comboMap);
+
+            // Load data on startup
+            LoadAllData();
+
+            // Save data on close
+            this.FormClosing += (s, e) => SaveAllData();
         }
         
         protected override void Dispose(bool disposing)
@@ -691,6 +702,7 @@ namespace ArtilleryMaster_BuildFinal
                 {
                     string name = dlg.MapName;
                     string imagePath = dlg.ImagePath;
+                    double gridSize = dlg.GridSize; // <-- Get grid size
                     // If you don't name your map, it doesn't get to play.
                     if (!string.IsNullOrWhiteSpace(name))
                     {
@@ -700,6 +712,7 @@ namespace ArtilleryMaster_BuildFinal
                         // Store imagePath in the dictionary. Because we can't trust our memory.
                         if (!string.IsNullOrWhiteSpace(imagePath))
                             mapImagePaths[name] = imagePath;
+                        mapGridSizes[name] = gridSize; // <-- Store grid size
                     }
                 }
             }
@@ -1095,8 +1108,11 @@ namespace ArtilleryMaster_BuildFinal
             {
                 mapImage = null;
             }
-            // Optionally set grid size if you store it per map
-            // currentGridSize = ...;
+            // Set grid size for selected map
+            if (!string.IsNullOrEmpty(selectedMap) && mapGridSizes.ContainsKey(selectedMap))
+                currentGridSize = mapGridSizes[selectedMap];
+            else
+                currentGridSize = 100.0;
             UpdateProjectileStats();
             pictureBoxMap.Invalidate();
         }
@@ -1345,6 +1361,119 @@ namespace ArtilleryMaster_BuildFinal
 
             e.DrawFocusRectangle();
         }
+
+        // --- Save/Load Methods ---
+
+        private void SaveAllData()
+        {
+            try
+            {
+                using (var sw = new StreamWriter(SaveFilePath, false))
+                {
+                    // Save Projectiles
+                    sw.WriteLine("[Projectiles]");
+                    foreach (var p in projectiles)
+                        sw.WriteLine($"{p.Name}|{p.Velocity}|{p.ImagePath}|{p.Unit}");
+
+                    // Save Maps
+                    sw.WriteLine("[Maps]");
+                    foreach (var mapObj in comboMap.Items)
+                    {
+                        string name = mapObj.ToString();
+                        string img = mapImagePaths.ContainsKey(name) ? mapImagePaths[name] : "";
+                        double grid = mapGridSizes.ContainsKey(name) ? mapGridSizes[name] : 100.0; // <-- Use stored grid size
+                        sw.WriteLine($"{name}|{img}|{grid}");
+                    }
+
+                    // Save TRPs
+                    sw.WriteLine("[TRP]");
+                    foreach (var trp in trpList)
+                        sw.WriteLine($"{trp.Name}|{trp.WeaponPos.X}|{trp.WeaponPos.Y}|{trp.TargetPos.X}|{trp.TargetPos.Y}");
+                }
+            }
+            catch { /* Optionally log or show error */ }
+        }
+
+        private void LoadAllData()
+        {
+            if (!File.Exists(SaveFilePath))
+                return;
+
+            try
+            {
+                string section = "";
+                foreach (var line in File.ReadAllLines(SaveFilePath))
+                {
+                    if (string.IsNullOrWhiteSpace(line)) continue;
+                    if (line.StartsWith("[") && line.EndsWith("]"))
+                    {
+                        section = line;
+                        continue;
+                    }
+
+                    if (section == "[Projectiles]")
+                    {
+                        var parts = line.Split('|');
+                        if (parts.Length >= 4)
+                        {
+                            var p = new ProjectileData
+                            {
+                                Name = parts[0],
+                                Velocity = double.TryParse(parts[1], out double v) ? v : 0,
+                                ImagePath = parts[2],
+                                Unit = parts[3]
+                            };
+                            projectiles.Add(p);
+                            if (!comboProjectile.Items.Contains(p.Name))
+                                comboProjectile.Items.Add(p.Name);
+                        }
+                    }
+                    else if (section == "[Maps]")
+                    {
+                        var parts = line.Split('|');
+                        if (parts.Length >= 3)
+                        {
+                            string name = parts[0];
+                            string img = parts[1];
+                            double grid = 100.0;
+                            double.TryParse(parts[2], out grid);
+                            if (!comboMap.Items.Contains(name))
+                                comboMap.Items.Add(name);
+                            if (!string.IsNullOrWhiteSpace(img))
+                                mapImagePaths[name] = img;
+                            mapGridSizes[name] = grid; // <-- Restore grid size
+                        }
+                    }
+                    else if (section == "[TRP]")
+                    {
+                        var parts = line.Split('|');
+                        if (parts.Length >= 5)
+                        {
+                            var trp = new TargetRegistrationPoint
+                            {
+                                Name = parts[0],
+                                WeaponPos = new PointF(float.Parse(parts[1]), float.Parse(parts[2])),
+                                TargetPos = new PointF(float.Parse(parts[3]), float.Parse(parts[4]))
+                            };
+                            trpList.Add(trp);
+                            if (!Target_Point.Items.Contains(trp.Name))
+                                Target_Point.Items.Add(trp.Name);
+                        }
+                    }
+                }
+                // Optionally select first items
+                if (comboProjectile.Items.Count > 0 && comboProjectile.SelectedIndex == -1)
+                    comboProjectile.SelectedIndex = 0;
+                if (comboMap.Items.Count > 0 && comboMap.SelectedIndex == -1)
+                    comboMap.SelectedIndex = 0;
+                if (Target_Point.Items.Count > 0 && Target_Point.SelectedIndex == -1)
+                    Target_Point.SelectedIndex = 0;
+            }
+            catch
+            {
+                // Optionally log or show error
+            }
+        }
     }
 
     // ProjectileData: because every projectile has a story.
@@ -1384,7 +1513,7 @@ namespace ArtilleryMaster_BuildFinal
         }
 
         public static double CalculateTimeOfFlight(double distance, double velocity, bool highArch)
-        {
+        {            
             // Time of flight: how long until you regret this shot?
             double theta = CalculateElevation(distance, velocity, highArch) * Math.PI / 180.0;
             if (velocity == 0) return 0.0; // Don't divide by zero, that's illegal in most countries
